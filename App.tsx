@@ -6,6 +6,20 @@ import { TranscriptView } from './components/TranscriptView';
 import { UploadIcon, DownloadIcon, SettingsIcon, LibraryIcon, PlayIcon, PauseIcon, TrashIcon } from './components/Icons';
 import { ApiKeyManager } from './components/ApiKeyManager';
 
+// Safe access to system API key to prevent crashes in environments where process is undefined
+const getSystemApiKey = () => {
+  try {
+    if (typeof process !== 'undefined' && process.env) {
+      return process.env.API_KEY;
+    }
+  } catch (e) {
+    // Ignore error
+  }
+  return undefined;
+};
+
+const SYSTEM_API_KEY = getSystemApiKey();
+
 function App() {
   // --- State ---
   const [activeTab, setActiveTab] = useState<'queue' | 'library'>('queue');
@@ -16,15 +30,25 @@ function App() {
   
   // Library
   const [library, setLibrary] = useState<LibraryItem[]>(() => {
-    const saved = localStorage.getItem('transcript_library');
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem('transcript_library');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      console.error("Failed to parse library from local storage", e);
+      return [];
+    }
   });
   const [selectedLibraryId, setSelectedLibraryId] = useState<string | null>(null);
 
   // Settings / Keys
   const [apiKeys, setApiKeys] = useState<ApiKeyConfig[]>(() => {
-    const saved = localStorage.getItem('gemini_api_keys');
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem('gemini_api_keys');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      console.error("Failed to parse api keys", e);
+      return [];
+    }
   });
   const [activeKeyId, setActiveKeyId] = useState<string | null>(() => {
     return localStorage.getItem('gemini_active_key_id') || null;
@@ -60,7 +84,7 @@ function App() {
       if (keyConfig) return keyConfig.key;
     }
     // 2. Try environment variable (default)
-    return process.env.API_KEY || '';
+    return SYSTEM_API_KEY || '';
   };
 
   const addToLibrary = (job: VideoJob, text: string) => {
@@ -270,7 +294,7 @@ function App() {
 
            <button 
              onClick={() => setShowKeyManager(true)}
-             className={`p-2 rounded-lg transition-all ${!activeKeyId && !process.env.API_KEY ? 'bg-red-500/10 text-red-400 animate-pulse border border-red-500/50' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}`}
+             className={`p-2 rounded-lg transition-all ${!activeKeyId && !SYSTEM_API_KEY ? 'bg-red-500/10 text-red-400 animate-pulse border border-red-500/50' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}`}
              title="API Settings"
            >
              <SettingsIcon className="w-5 h-5" />

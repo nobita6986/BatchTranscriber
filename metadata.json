@@ -1,0 +1,5 @@
+{
+  "name": "Gemini Batch Transcriber",
+  "description": "A high-performance tool to batch process video files and extract transcripts using Gemini 1.5 Flash.",
+  "requestFramePermissions": []
+}

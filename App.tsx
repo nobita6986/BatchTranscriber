@@ -146,6 +146,14 @@ function App() {
     if (selectedLibraryId === id) setSelectedLibraryId(null);
   };
 
+  const handleClearLibrary = () => {
+     if (library.length === 0) return;
+     if (window.confirm("Are you sure you want to delete all transcripts from the library? This action cannot be undone.")) {
+        setLibrary([]);
+        setSelectedLibraryId(null);
+     }
+  };
+
   const updateJob = useCallback((id: string, updates: Partial<VideoJob>) => {
     setJobs(prev => prev.map(job => job.id === id ? { ...job, ...updates } : job));
   }, []);
@@ -419,12 +427,18 @@ function App() {
 
           {/* Footer Actions (Library only) */}
           {activeTab === 'library' && library.length > 0 && (
-             <div className="p-3 border-t border-slate-800 bg-slate-800/30">
+             <div className="p-3 border-t border-slate-800 bg-slate-800/30 space-y-2">
                <button 
                  onClick={handleDownloadAllLibrary}
                  className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2 rounded-lg border border-slate-700 text-xs font-medium transition-colors"
                >
                  <DownloadIcon className="w-4 h-4" /> Export All Library
+               </button>
+               <button 
+                 onClick={handleClearLibrary}
+                 className="w-full flex items-center justify-center gap-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 py-2 rounded-lg text-xs font-medium transition-colors"
+               >
+                 <TrashIcon className="w-4 h-4" /> Delete All
                </button>
              </div>
           )}

@@ -1,6 +1,6 @@
 import React from 'react';
 import { JobStatus, VideoJob, LibraryItem } from '../types';
-import { CheckCircleIcon, XCircleIcon, FileIcon, DownloadIcon, TrashIcon } from './Icons';
+import { CheckCircleIcon, XCircleIcon, FileIcon, DownloadIcon, TrashIcon, RefreshIcon } from './Icons';
 
 interface VideoListProps {
   mode: 'queue' | 'library';
@@ -10,10 +10,11 @@ interface VideoListProps {
   onSelect: (id: string) => void;
   onRemove: (id: string) => void;
   onDownload?: (id: string) => void;
+  onRetry?: (id: string) => void;
 }
 
 export const VideoList: React.FC<VideoListProps> = ({ 
-  mode, jobs = [], libraryItems = [], selectedId, onSelect, onRemove, onDownload 
+  mode, jobs = [], libraryItems = [], selectedId, onSelect, onRemove, onDownload, onRetry
 }) => {
   
   if (mode === 'queue' && jobs.length === 0) {
@@ -105,6 +106,20 @@ export const VideoList: React.FC<VideoListProps> = ({
             
             {/* Actions */}
             <div className="absolute right-2 top-2 flex items-center gap-1">
+              {/* Retry Button */}
+              {isJob && job!.status === JobStatus.ERROR && onRetry && (
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRetry(id);
+                    }}
+                    className="p-1 text-red-400 hover:text-white transition-colors bg-slate-800/50 rounded-md hover:bg-red-500/50"
+                    title="Retry"
+                  >
+                    <RefreshIcon className="w-4 h-4" />
+                  </button>
+              )}
+
               {onDownload && (isJob ? job!.status === JobStatus.COMPLETED : true) && (
                   <button 
                     onClick={(e) => {

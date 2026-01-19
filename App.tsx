@@ -3,7 +3,7 @@ import { JobStatus, VideoJob, LibraryItem, ApiKeyConfig } from './types';
 import { transcribeVideo } from './services/geminiService';
 import { VideoList } from './components/VideoList';
 import { TranscriptView } from './components/TranscriptView';
-import { UploadIcon, DownloadIcon, SettingsIcon, LibraryIcon, PlayIcon, PauseIcon, TrashIcon } from './components/Icons';
+import { UploadIcon, DownloadIcon, SettingsIcon, LibraryIcon, PlayIcon, PauseIcon, TrashIcon, RefreshIcon } from './components/Icons';
 import { ApiKeyManager } from './components/ApiKeyManager';
 
 // Robust environment variable accessor that works across Vite, Next.js, and standard builds
@@ -111,6 +111,7 @@ function App() {
       total: jobs.length,
       completed: jobs.filter(j => j.status === JobStatus.COMPLETED).length,
       processing: jobs.filter(j => j.status === JobStatus.PROCESSING || j.status === JobStatus.UPLOADING).length,
+      failed: jobs.filter(j => j.status === JobStatus.ERROR).length,
       libraryCount: library.length
   };
 
@@ -172,6 +173,27 @@ function App() {
      document.body.appendChild(element);
      element.click();
      document.body.removeChild(element);
+  };
+
+  const retryJob = (id: string) => {
+    updateJob(id, { 
+      status: JobStatus.IDLE, 
+      error: undefined, 
+      progress: 0 
+    });
+    // Ensure queue is running to pick it up
+    if (!isQueueRunning) setIsQueueRunning(true);
+  };
+
+  const retryAllFailed = () => {
+    setJobs(prev => prev.map(job => {
+      if (job.status === JobStatus.ERROR) {
+        return { ...job, status: JobStatus.IDLE, error: undefined, progress: 0 };
+      }
+      return job;
+    }));
+    // Ensure queue is running
+    if (!isQueueRunning) setIsQueueRunning(true);
   };
 
   // --- Queue Processor ---
@@ -293,6 +315,22 @@ function App() {
              </button>
              
              <div className="h-4 w-px bg-slate-700 mx-1"></div>
+
+             {/* Retry All Failed Button */}
+             {stats.failed > 0 && (
+               <>
+                 <button 
+                   onClick={retryAllFailed}
+                   className="flex items-center gap-2 px-3 py-1.5 rounded-md font-medium text-red-400 hover:bg-red-500/10 transition-colors"
+                   title={`Retry ${stats.failed} failed jobs`}
+                 >
+                   <RefreshIcon className="w-4 h-4" />
+                   <span className="hidden lg:inline">Retry Failed ({stats.failed})</span>
+                   <span className="lg:hidden">{stats.failed}</span>
+                 </button>
+                 <div className="h-4 w-px bg-slate-700 mx-1"></div>
+               </>
+             )}
              
              <div className="flex gap-3 px-2 text-slate-400 text-xs">
                 <span>Total: {stats.total}</span>
@@ -307,6 +345,18 @@ function App() {
            >
              <SettingsIcon className="w-5 h-5" />
            </button>
+
+           {/* Download All Button */}
+           {library.length > 0 && (
+              <button 
+                onClick={handleDownloadAllLibrary}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-2 rounded-lg font-medium transition-all border border-slate-700 flex items-center gap-2 shadow-sm"
+                title="Download all saved transcripts"
+              >
+                <DownloadIcon className="w-4 h-4" />
+                <span className="hidden xl:inline">Download All</span>
+              </button>
+           )}
 
            <button 
              onClick={() => fileInputRef.current?.click()}
@@ -363,6 +413,7 @@ function App() {
                      if (item) handleDownload(item.fileName, item.transcript);
                   }
                }}
+               onRetry={activeTab === 'queue' ? retryJob : undefined}
              />
           </div>
 

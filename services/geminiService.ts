@@ -15,11 +15,10 @@ const fileToGenerativePart = async (file: File): Promise<string> => {
   });
 };
 
-export const transcribeVideo = async (file: File): Promise<string> => {
+export const transcribeVideo = async (file: File, apiKey: string): Promise<string> => {
   try {
-    const apiKey = process.env.API_KEY;
     if (!apiKey) {
-      throw new Error("API Key is missing in environment variables.");
+      throw new Error("No API Key provided. Please configure an API Key in settings.");
     }
 
     const ai = new GoogleGenAI({ apiKey });
@@ -57,6 +56,10 @@ export const transcribeVideo = async (file: File): Promise<string> => {
 
   } catch (error: any) {
     console.error("Gemini Transcription Error:", error);
+    // Improve error message for common issues
+    if (error.message?.includes("400")) {
+       throw new Error("Bad Request: Video might be too large or format unsupported by Gemini directly.");
+    }
     throw new Error(error.message || "Failed to process video");
   }
 };

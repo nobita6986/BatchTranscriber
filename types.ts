@@ -12,8 +12,21 @@ export interface VideoJob {
   status: JobStatus;
   transcript?: string;
   error?: string;
-  progress: number; // 0 to 100
-  thumbnailUrl?: string; // Object URL for preview
+  progress: number;
+}
+
+export interface LibraryItem {
+  id: string;
+  fileName: string;
+  transcript: string;
+  createdAt: string; // ISO Date string
+  fileSize: number;
+}
+
+export interface ApiKeyConfig {
+  id: string;
+  name: string;
+  key: string;
 }
 
 export interface TranscriptionStats {

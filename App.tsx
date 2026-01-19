@@ -6,14 +6,22 @@ import { TranscriptView } from './components/TranscriptView';
 import { UploadIcon, DownloadIcon, SettingsIcon, LibraryIcon, PlayIcon, PauseIcon, TrashIcon } from './components/Icons';
 import { ApiKeyManager } from './components/ApiKeyManager';
 
-// Safe access to system API key to prevent crashes in environments where process is undefined
+// Robust environment variable accessor that works across Vite, Next.js, and standard builds
 const getSystemApiKey = () => {
   try {
+    // 1. Check for Vite environment variable
+    // @ts-ignore
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
+      // @ts-ignore
+      return import.meta.env.VITE_API_KEY;
+    }
+    
+    // 2. Check for standard process.env (Webpack/Node)
     if (typeof process !== 'undefined' && process.env) {
-      return process.env.API_KEY;
+      return process.env.API_KEY || process.env.REACT_APP_API_KEY;
     }
   } catch (e) {
-    // Ignore error
+    console.warn("Could not read environment variables:", e);
   }
   return undefined;
 };

@@ -3,7 +3,7 @@ import { JobStatus, VideoJob, LibraryItem, ApiKeyConfig } from './types';
 import { transcribeVideo } from './services/geminiService';
 import { VideoList } from './components/VideoList';
 import { TranscriptView } from './components/TranscriptView';
-import { UploadIcon, DownloadIcon, SettingsIcon, LibraryIcon, PlayIcon, PauseIcon, TrashIcon, RefreshIcon } from './components/Icons';
+import { UploadIcon, DownloadIcon, SettingsIcon, LibraryIcon, PlayIcon, PauseIcon, TrashIcon, RefreshIcon, BoltIcon } from './components/Icons';
 import { ApiKeyManager } from './components/ApiKeyManager';
 
 // Robust environment variable accessor that works across Vite, Next.js, and standard builds
@@ -27,6 +27,7 @@ const getSystemApiKey = () => {
 };
 
 const SYSTEM_API_KEY = getSystemApiKey();
+const AUTO_CONCURRENCY_LIMIT = 3;
 
 function App() {
   // --- State ---
@@ -64,8 +65,9 @@ function App() {
   const [showKeyManager, setShowKeyManager] = useState(false);
 
   // Control
-  const [isProcessing, setIsProcessing] = useState(false);
   const [isQueueRunning, setIsQueueRunning] = useState(true); // Default to auto-run
+  const [concurrencyLimit, setConcurrencyLimit] = useState<number>(3);
+  const [autoConcurrency, setAutoConcurrency] = useState<boolean>(true);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -107,10 +109,11 @@ function App() {
   };
 
   // --- Stats ---
+  const processingCount = jobs.filter(j => j.status === JobStatus.PROCESSING || j.status === JobStatus.UPLOADING).length;
   const stats = {
       total: jobs.length,
       completed: jobs.filter(j => j.status === JobStatus.COMPLETED).length,
-      processing: jobs.filter(j => j.status === JobStatus.PROCESSING || j.status === JobStatus.UPLOADING).length,
+      processing: processingCount,
       failed: jobs.filter(j => j.status === JobStatus.ERROR).length,
       libraryCount: library.length
   };
@@ -205,56 +208,69 @@ function App() {
   };
 
   // --- Queue Processor ---
-  const processNextJob = useCallback(async () => {
-    if (isProcessing || !isQueueRunning) return;
+  const processJob = useCallback(async (jobId: string) => {
+      const job = jobs.find(j => j.id === jobId);
+      if (!job || job.status !== JobStatus.IDLE) return;
 
-    const nextJob = jobs.find(job => job.status === JobStatus.IDLE);
-    if (!nextJob) return;
+      const key = getActiveApiKey();
+      if (!key) {
+        updateJob(jobId, { 
+          status: JobStatus.ERROR, 
+          error: "Missing API Key. Configure in Settings." 
+        });
+        setIsQueueRunning(false); 
+        setShowKeyManager(true);
+        return;
+      }
 
-    // Check API Key
-    const key = getActiveApiKey();
-    if (!key) {
-      updateJob(nextJob.id, { 
-        status: JobStatus.ERROR, 
-        error: "Missing API Key. Configure in Settings." 
-      });
-      setIsQueueRunning(false); // Stop queue if no key
-      setShowKeyManager(true);
-      return;
-    }
+      try {
+        updateJob(jobId, { status: JobStatus.UPLOADING });
+        // Small delay to allow UI update
+        await new Promise(r => setTimeout(r, 100));
+        
+        updateJob(jobId, { status: JobStatus.PROCESSING });
+        const transcript = await transcribeVideo(job.file, key);
 
-    setIsProcessing(true);
-    updateJob(nextJob.id, { status: JobStatus.UPLOADING });
+        updateJob(jobId, { 
+          status: JobStatus.COMPLETED, 
+          transcript,
+          progress: 100 
+        });
+        
+        // Pass fresh object based on current job data to library
+        addToLibrary(job, transcript);
 
-    try {
-      updateJob(nextJob.id, { status: JobStatus.PROCESSING });
-      const transcript = await transcribeVideo(nextJob.file, key);
+      } catch (error: any) {
+        updateJob(jobId, { 
+          status: JobStatus.ERROR, 
+          error: error.message || "Failed processing",
+          progress: 0 
+        });
+      }
+  }, [jobs, updateJob, apiKeys, activeKeyId]);
 
-      // Success
-      updateJob(nextJob.id, { 
-        status: JobStatus.COMPLETED, 
-        transcript,
-        progress: 100 
-      });
-      addToLibrary(nextJob, transcript);
-
-    } catch (error: any) {
-      updateJob(nextJob.id, { 
-        status: JobStatus.ERROR, 
-        error: error.message || "Failed processing",
-        progress: 0 
-      });
-    } finally {
-      setIsProcessing(false);
-    }
-  }, [jobs, isProcessing, isQueueRunning, updateJob, apiKeys, activeKeyId]);
-
-  // Watch queue
+  // Main Queue Watcher
   useEffect(() => {
-    if (!isProcessing && isQueueRunning && jobs.some(j => j.status === JobStatus.IDLE)) {
-      processNextJob();
+    if (!isQueueRunning) return;
+
+    const activeJobsCount = jobs.filter(j => j.status === JobStatus.PROCESSING || j.status === JobStatus.UPLOADING).length;
+    const effectiveLimit = autoConcurrency ? AUTO_CONCURRENCY_LIMIT : concurrencyLimit;
+    const slotsAvailable = effectiveLimit - activeJobsCount;
+
+    if (slotsAvailable > 0) {
+      // Find idle jobs
+      const idleJobs = jobs.filter(j => j.status === JobStatus.IDLE);
+      
+      // Start as many as we have slots for
+      if (idleJobs.length > 0) {
+        const jobsToStart = idleJobs.slice(0, slotsAvailable);
+        jobsToStart.forEach(job => {
+          processJob(job.id);
+        });
+      }
     }
-  }, [jobs, isProcessing, isQueueRunning, processNextJob]);
+  }, [jobs, isQueueRunning, autoConcurrency, concurrencyLimit, processJob]);
+
 
   // --- Derived State for View ---
   const currentViewItem = activeTab === 'queue' 
@@ -321,6 +337,39 @@ function App() {
                {isQueueRunning ? <PauseIcon className="w-4 h-4"/> : <PlayIcon className="w-4 h-4"/>}
                <span className="hidden sm:inline">{isQueueRunning ? 'Running' : 'Paused'}</span>
              </button>
+
+             <div className="h-4 w-px bg-slate-700 mx-1"></div>
+
+             {/* Threads Control */}
+             <div className="flex items-center gap-2 px-2" title="Parallel Processing Settings">
+                <BoltIcon className={`w-4 h-4 ${autoConcurrency ? 'text-primary-400' : 'text-slate-400'}`} />
+                <div className="flex items-center gap-2 bg-slate-900/50 rounded p-0.5">
+                   <button 
+                     onClick={() => setAutoConcurrency(!autoConcurrency)}
+                     className={`px-2 py-0.5 rounded text-xs font-medium transition-all ${
+                       autoConcurrency 
+                       ? 'bg-primary-600 text-white shadow-sm' 
+                       : 'text-slate-400 hover:text-slate-200'
+                     }`}
+                   >
+                     Auto
+                   </button>
+                   
+                   {!autoConcurrency && (
+                     <div className="flex items-center gap-1 px-1">
+                        <button 
+                          onClick={() => setConcurrencyLimit(Math.max(1, concurrencyLimit - 1))}
+                          className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700 rounded"
+                        >-</button>
+                        <span className="w-4 text-center text-xs font-mono">{concurrencyLimit}</span>
+                        <button 
+                          onClick={() => setConcurrencyLimit(Math.min(10, concurrencyLimit + 1))}
+                          className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700 rounded"
+                        >+</button>
+                     </div>
+                   )}
+                </div>
+             </div>
              
              <div className="h-4 w-px bg-slate-700 mx-1"></div>
 
@@ -342,7 +391,9 @@ function App() {
              
              <div className="flex gap-3 px-2 text-slate-400 text-xs">
                 <span>Total: {stats.total}</span>
-                <span className={isProcessing ? 'text-primary-400' : ''}>Proc: {stats.processing}</span>
+                <span className={processingCount > 0 ? 'text-primary-400 font-medium' : ''}>
+                   Proc: {processingCount}/{autoConcurrency ? 'Auto' : concurrencyLimit}
+                </span>
              </div>
            </div>
 

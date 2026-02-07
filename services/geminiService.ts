@@ -63,3 +63,31 @@ export const transcribeVideo = async (file: File, apiKey: string): Promise<strin
     throw new Error(error.message || "Failed to process video");
   }
 };
+
+export const refineTranscript = async (rawText: string, apiKey: string): Promise<string> => {
+    try {
+        if (!apiKey) throw new Error("No API Key");
+
+        const ai = new GoogleGenAI({ apiKey });
+        
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: {
+                parts: [{
+                    text: `The following text is a raw, unformatted transcript from a video (likely YouTube captions). It lacks punctuation, proper capitalization, and paragraph breaks. 
+                    
+                    Please rewrite it to be readable, adding punctuation, capitalization, and paragraphs where appropriate. Do NOT summarize. Keep the content verbatim as much as possible, just fix the grammar and formatting.
+                    
+                    Raw Text:
+                    "${rawText.substring(0, 30000)}"` // Limit context if too huge
+                }]
+            }
+        });
+
+        return response.text || rawText;
+
+    } catch (error: any) {
+        console.warn("Refine failed, returning raw", error);
+        return rawText;
+    }
+};

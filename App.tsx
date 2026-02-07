@@ -1,22 +1,20 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { JobStatus, VideoJob, LibraryItem, ApiKeyConfig } from './types';
-import { transcribeVideo } from './services/geminiService';
+import { transcribeVideo, refineTranscript } from './services/geminiService';
+import { getYoutubeMetadata, fetchYoutubeTranscript } from './services/youtubeService';
 import { VideoList } from './components/VideoList';
 import { TranscriptView } from './components/TranscriptView';
-import { UploadIcon, DownloadIcon, SettingsIcon, LibraryIcon, PlayIcon, PauseIcon, TrashIcon, RefreshIcon, BoltIcon } from './components/Icons';
+import { UploadIcon, DownloadIcon, SettingsIcon, LibraryIcon, PlayIcon, PauseIcon, TrashIcon, RefreshIcon, BoltIcon, YoutubeIcon, XCircleIcon } from './components/Icons';
 import { ApiKeyManager } from './components/ApiKeyManager';
 
-// Robust environment variable accessor that works across Vite, Next.js, and standard builds
+// Robust environment variable accessor
 const getSystemApiKey = () => {
   try {
-    // 1. Check for Vite environment variable
     // @ts-ignore
     if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
       // @ts-ignore
       return import.meta.env.VITE_API_KEY;
     }
-    
-    // 2. Check for standard process.env (Webpack/Node)
     if (typeof process !== 'undefined' && process.env) {
       return process.env.API_KEY || process.env.REACT_APP_API_KEY;
     }
@@ -63,9 +61,11 @@ function App() {
     return localStorage.getItem('gemini_active_key_id') || null;
   });
   const [showKeyManager, setShowKeyManager] = useState(false);
+  const [showYoutubeModal, setShowYoutubeModal] = useState(false);
+  const [youtubeInput, setYoutubeInput] = useState('');
 
   // Control
-  const [isQueueRunning, setIsQueueRunning] = useState(true); // Default to auto-run
+  const [isQueueRunning, setIsQueueRunning] = useState(true); 
   const [concurrencyLimit, setConcurrencyLimit] = useState<number>(3);
   const [autoConcurrency, setAutoConcurrency] = useState<boolean>(true);
   
@@ -88,22 +88,22 @@ function App() {
 
   // --- Helper Functions ---
   const getActiveApiKey = () => {
-    // 1. Try selected custom key
     if (activeKeyId) {
       const keyConfig = apiKeys.find(k => k.id === activeKeyId);
       if (keyConfig) return keyConfig.key;
     }
-    // 2. Try environment variable (default)
     return SYSTEM_API_KEY || '';
   };
 
   const addToLibrary = (job: VideoJob, text: string) => {
     const newItem: LibraryItem = {
       id: Math.random().toString(36).substring(7),
-      fileName: job.file.name,
-      fileSize: job.file.size,
+      fileName: job.name,
+      fileSize: job.size || 0,
       transcript: text,
       createdAt: new Date().toISOString(),
+      source: job.source,
+      url: job.url
     };
     setLibrary(prev => [newItem, ...prev]);
   };
@@ -122,21 +122,53 @@ function App() {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      const newJobs: VideoJob[] = Array.from(e.target.files).map(file => ({
+      // Fix: Explicitly type 'file' as File to avoid 'unknown' type error in Array.from map
+      const newJobs: VideoJob[] = Array.from(e.target.files).map((file: File) => ({
         id: Math.random().toString(36).substring(7),
-        file: file as File,
+        source: 'file',
+        file: file,
+        name: file.name,
+        size: file.size,
         status: JobStatus.IDLE,
         progress: 0,
       }));
       
       setJobs(prev => [...prev, ...newJobs]);
       if (activeTab === 'library') setActiveTab('queue');
-      // Auto-select first if none selected
-      if (!selectedJobId && newJobs.length > 0) {
-        setSelectedJobId(newJobs[0].id);
-      }
+      if (!selectedJobId && newJobs.length > 0) setSelectedJobId(newJobs[0].id);
     }
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleYoutubeImport = async () => {
+      const urls = youtubeInput.split('\n').map(u => u.trim()).filter(u => u.length > 0);
+      if (urls.length === 0) return;
+
+      setShowYoutubeModal(false);
+      setYoutubeInput('');
+      setActiveTab('queue');
+
+      // Create placeholders immediately
+      const newJobs: VideoJob[] = urls.map(url => ({
+          id: Math.random().toString(36).substring(7),
+          source: 'youtube',
+          url: url,
+          name: url, // Temporary name until fetched
+          status: JobStatus.IDLE,
+          progress: 0
+      }));
+
+      setJobs(prev => [...prev, ...newJobs]);
+
+      // Fetch metadata in background for UI polish
+      newJobs.forEach(async (job) => {
+          try {
+              const meta = await getYoutubeMetadata(job.url!);
+              setJobs(prev => prev.map(j => j.id === job.id ? { ...j, name: meta.title, thumbnail: meta.thumbnail } : j));
+          } catch (e) {
+              // Ignore metadata errors, processing will handle it later
+          }
+      });
   };
 
   const removeJob = (id: string) => {
@@ -151,7 +183,7 @@ function App() {
 
   const handleClearLibrary = () => {
      if (library.length === 0) return;
-     if (window.confirm("Are you sure you want to delete all transcripts from the library? This action cannot be undone.")) {
+     if (window.confirm("Are you sure you want to delete all transcripts from the library?")) {
         setLibrary([]);
         setSelectedLibraryId(null);
      }
@@ -174,7 +206,7 @@ function App() {
   const handleDownloadAllLibrary = () => {
      if (library.length === 0) return;
      const allText = library.map(item => 
-       `------------------\nFile: ${item.fileName}\nDate: ${new Date(item.createdAt).toLocaleString()}\n------------------\n${item.transcript}\n\n`
+       `------------------\nFile: ${item.fileName}\nSource: ${item.source === 'youtube' ? item.url : 'File Upload'}\nDate: ${new Date(item.createdAt).toLocaleString()}\n------------------\n${item.transcript}\n\n`
      ).join('\n');
      
      const element = document.createElement("a");
@@ -187,12 +219,7 @@ function App() {
   };
 
   const retryJob = (id: string) => {
-    updateJob(id, { 
-      status: JobStatus.IDLE, 
-      error: undefined, 
-      progress: 0 
-    });
-    // Ensure queue is running to pick it up
+    updateJob(id, { status: JobStatus.IDLE, error: undefined, progress: 0 });
     if (!isQueueRunning) setIsQueueRunning(true);
   };
 
@@ -203,7 +230,6 @@ function App() {
       }
       return job;
     }));
-    // Ensure queue is running
     if (!isQueueRunning) setIsQueueRunning(true);
   };
 
@@ -214,22 +240,32 @@ function App() {
 
       const key = getActiveApiKey();
       if (!key) {
-        updateJob(jobId, { 
-          status: JobStatus.ERROR, 
-          error: "Missing API Key. Configure in Settings." 
-        });
+        updateJob(jobId, { status: JobStatus.ERROR, error: "Missing API Key" });
         setIsQueueRunning(false); 
         setShowKeyManager(true);
         return;
       }
 
       try {
-        updateJob(jobId, { status: JobStatus.UPLOADING });
-        // Small delay to allow UI update
-        await new Promise(r => setTimeout(r, 100));
+        updateJob(jobId, { status: JobStatus.UPLOADING }); // "Fetching" for YouTube
         
-        updateJob(jobId, { status: JobStatus.PROCESSING });
-        const transcript = await transcribeVideo(job.file, key);
+        let transcript = "";
+
+        if (job.source === 'youtube' && job.url) {
+            // 1. Fetch Raw Transcript
+            const rawText = await fetchYoutubeTranscript(job.url);
+            
+            // 2. Refine with Gemini
+            updateJob(jobId, { status: JobStatus.PROCESSING });
+            transcript = await refineTranscript(rawText, key);
+
+        } else if (job.source === 'file' && job.file) {
+            // Standard File Transcription
+            updateJob(jobId, { status: JobStatus.PROCESSING });
+            transcript = await transcribeVideo(job.file, key);
+        } else {
+            throw new Error("Invalid Job Source");
+        }
 
         updateJob(jobId, { 
           status: JobStatus.COMPLETED, 
@@ -238,7 +274,9 @@ function App() {
         });
         
         // Pass fresh object based on current job data to library
-        addToLibrary(job, transcript);
+        // We use jobs.find to get the latest state (e.g. name updated by metadata fetch)
+        const updatedJob = jobs.find(j => j.id === jobId) || job;
+        addToLibrary(updatedJob, transcript);
 
       } catch (error: any) {
         updateJob(jobId, { 
@@ -258,15 +296,10 @@ function App() {
     const slotsAvailable = effectiveLimit - activeJobsCount;
 
     if (slotsAvailable > 0) {
-      // Find idle jobs
       const idleJobs = jobs.filter(j => j.status === JobStatus.IDLE);
-      
-      // Start as many as we have slots for
       if (idleJobs.length > 0) {
         const jobsToStart = idleJobs.slice(0, slotsAvailable);
-        jobsToStart.forEach(job => {
-          processJob(job.id);
-        });
+        jobsToStart.forEach(job => processJob(job.id));
       }
     }
   }, [jobs, isQueueRunning, autoConcurrency, concurrencyLimit, processJob]);
@@ -277,18 +310,60 @@ function App() {
     ? jobs.find(j => j.id === selectedJobId)
     : library.find(i => i.id === selectedLibraryId);
 
-  // Adapt VideoJob or LibraryItem for TranscriptView
   const viewData = currentViewItem ? {
-      file: { name: (activeTab === 'queue' ? (currentViewItem as VideoJob).file.name : (currentViewItem as LibraryItem).fileName) } as File,
+      // Compatibility mapping for TranscriptView
+      id: currentViewItem.id,
+      source: (activeTab === 'queue' ? (currentViewItem as VideoJob).source : (currentViewItem as LibraryItem).source || 'file'),
+      file: { name: (activeTab === 'queue' ? (currentViewItem as VideoJob).name : (currentViewItem as LibraryItem).fileName) } as File,
       status: activeTab === 'queue' ? (currentViewItem as VideoJob).status : JobStatus.COMPLETED,
       transcript: currentViewItem.transcript,
-      error: activeTab === 'queue' ? (currentViewItem as VideoJob).error : undefined
-  } : undefined;
+      error: activeTab === 'queue' ? (currentViewItem as VideoJob).error : undefined,
+      progress: 0
+  } as VideoJob : undefined;
 
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100 font-sans selection:bg-primary-500/30">
       
+      {/* YouTube Modal */}
+      {showYoutubeModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+              <div className="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+                  <div className="p-4 border-b border-slate-700 flex justify-between items-center bg-slate-800/50">
+                      <h3 className="font-semibold text-slate-100 flex items-center gap-2">
+                          <YoutubeIcon className="w-5 h-5 text-red-500" />
+                          Import from YouTube
+                      </h3>
+                      <button onClick={() => setShowYoutubeModal(false)} className="text-slate-400 hover:text-white">
+                          <XCircleIcon className="w-6 h-6" />
+                      </button>
+                  </div>
+                  <div className="p-6 space-y-4 flex-1 overflow-y-auto">
+                      <p className="text-sm text-slate-400">
+                          Paste YouTube URLs below (one per line). <br/>
+                          <span className="text-xs text-slate-500 opacity-80">* Uses available captions and AI to refine them. Does not support auto-generated captions for some videos.</span>
+                      </p>
+                      <textarea 
+                          className="w-full h-48 bg-slate-800 border border-slate-700 rounded-lg p-3 text-sm text-slate-200 focus:outline-none focus:border-primary-500 font-mono"
+                          placeholder="https://www.youtube.com/watch?v=...\nhttps://youtu.be/..."
+                          value={youtubeInput}
+                          onChange={e => setYoutubeInput(e.target.value)}
+                      />
+                  </div>
+                  <div className="p-4 border-t border-slate-700 bg-slate-800/30 flex justify-end gap-2">
+                      <button onClick={() => setShowYoutubeModal(false)} className="px-4 py-2 rounded-lg text-slate-300 hover:bg-slate-800 transition-colors">Cancel</button>
+                      <button 
+                          onClick={handleYoutubeImport}
+                          disabled={!youtubeInput.trim()}
+                          className="bg-red-600 hover:bg-red-500 text-white px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                          Import Videos
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
       {/* API Key Modal */}
       {showKeyManager && (
         <ApiKeyManager 
@@ -296,7 +371,7 @@ function App() {
           selectedKeyId={activeKeyId}
           onAddKey={(k) => {
              setApiKeys(prev => [...prev, k]);
-             if (!activeKeyId) setActiveKeyId(k.id); // Auto select first
+             if (!activeKeyId) setActiveKeyId(k.id);
           }}
           onRemoveKey={(id) => {
              setApiKeys(prev => prev.filter(k => k.id !== id));
@@ -311,7 +386,6 @@ function App() {
       <header className="flex-shrink-0 h-16 border-b border-slate-800 bg-slate-900/80 backdrop-blur-md flex items-center px-6 sticky top-0 z-10 justify-between">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-purple-600 flex items-center justify-center shadow-lg shadow-primary-500/20">
-             {/* Logo Icon */}
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-white">
                <path d="M8.25 4.5a3.75 3.75 0 1 1 7.5 0v8.25a3.75 3.75 0 1 1-7.5 0V4.5Z" />
                <path d="M6 10.5a.75.75 0 0 1 .75.75v1.5a5.25 5.25 0 1 0 10.5 0v-1.5a.75.75 0 0 1 1.5 0v1.5a6.751 6.751 0 0 1-6 6.709v2.291h3a.75.75 0 0 1 0 1.5h-7.5a.75.75 0 0 1 0-1.5h3v-2.291a6.751 6.751 0 0 1-6-6.709v-1.5A.75.75 0 0 1 6 10.5Z" />
@@ -332,7 +406,6 @@ function App() {
                     ? 'bg-green-500/10 text-green-400 hover:bg-green-500/20' 
                     : 'bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20'
                 }`}
-                title={isQueueRunning ? "Queue Running - Click to Pause" : "Queue Paused - Click to Resume"}
              >
                {isQueueRunning ? <PauseIcon className="w-4 h-4"/> : <PlayIcon className="w-4 h-4"/>}
                <span className="hidden sm:inline">{isQueueRunning ? 'Running' : 'Paused'}</span>
@@ -341,7 +414,7 @@ function App() {
              <div className="h-4 w-px bg-slate-700 mx-1"></div>
 
              {/* Threads Control */}
-             <div className="flex items-center gap-2 px-2" title="Parallel Processing Settings">
+             <div className="flex items-center gap-2 px-2">
                 <BoltIcon className={`w-4 h-4 ${autoConcurrency ? 'text-primary-400' : 'text-slate-400'}`} />
                 <div className="flex items-center gap-2 bg-slate-900/50 rounded p-0.5">
                    <button 
@@ -379,7 +452,6 @@ function App() {
                  <button 
                    onClick={retryAllFailed}
                    className="flex items-center gap-2 px-3 py-1.5 rounded-md font-medium text-red-400 hover:bg-red-500/10 transition-colors"
-                   title={`Retry ${stats.failed} failed jobs`}
                  >
                    <RefreshIcon className="w-4 h-4" />
                    <span className="hidden lg:inline">Retry Failed ({stats.failed})</span>
@@ -417,13 +489,24 @@ function App() {
               </button>
            )}
 
-           <button 
-             onClick={() => fileInputRef.current?.click()}
-             className="bg-primary-600 hover:bg-primary-500 text-white px-4 py-2 rounded-lg font-medium transition-all shadow-lg shadow-primary-500/20 flex items-center gap-2"
-           >
-             <UploadIcon className="w-4 h-4" />
-             <span className="hidden sm:inline">Upload</span>
-           </button>
+           <div className="flex items-center gap-2">
+               <button 
+                 onClick={() => setShowYoutubeModal(true)}
+                 className="bg-slate-800 hover:bg-slate-700 text-white px-3 py-2 rounded-lg font-medium transition-all shadow-sm border border-slate-600 flex items-center gap-2"
+                 title="Import YouTube Links"
+               >
+                 <YoutubeIcon className="w-5 h-5 text-red-500" />
+                 <span className="hidden lg:inline">YouTube</span>
+               </button>
+
+               <button 
+                 onClick={() => fileInputRef.current?.click()}
+                 className="bg-primary-600 hover:bg-primary-500 text-white px-4 py-2 rounded-lg font-medium transition-all shadow-lg shadow-primary-500/20 flex items-center gap-2"
+               >
+                 <UploadIcon className="w-4 h-4" />
+                 <span className="hidden sm:inline">Upload</span>
+               </button>
+           </div>
            <input type="file" ref={fileInputRef} className="hidden" accept="video/*" multiple onChange={handleFileChange} />
         </div>
       </header>
@@ -466,7 +549,7 @@ function App() {
                onDownload={(id) => {
                   if (activeTab === 'queue') {
                      const job = jobs.find(j => j.id === id);
-                     if (job?.transcript) handleDownload(job.file.name, job.transcript);
+                     if (job?.transcript) handleDownload(job.name, job.transcript);
                   } else {
                      const item = library.find(i => i.id === id);
                      if (item) handleDownload(item.fileName, item.transcript);
@@ -498,7 +581,7 @@ function App() {
         {/* Right Panel: Transcription */}
         <section className="col-span-8 lg:col-span-9 flex flex-col min-h-0">
           <TranscriptView 
-             job={viewData as VideoJob} // Type assertion OK because view only uses common props present in viewData structure constructed above
+             job={viewData} 
           />
         </section>
 

@@ -84,3 +84,9 @@ export const BoltIcon = ({ className }: { className?: string }) => (
     <path fillRule="evenodd" d="M14.615 1.595a.75.75 0 0 1 .359.852L12.982 9.75h7.268a.75.75 0 0 1 .548 1.262l-10.5 11.25a.75.75 0 0 1-1.272-.71l1.992-7.302H3.75a.75.75 0 0 1-.548-1.262l10.5-11.25a.75.75 0 0 1 .913-.143Z" clipRule="evenodd" />
   </svg>
 );
+
+export const YoutubeIcon = ({ className }: { className?: string }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className={className}>
+    <path fillRule="evenodd" d="M1.334 9.715C.353 10.957 0 12.522 0 14.167c0 1.644.353 3.21 1.334 4.452C2.463 20.065 4.096 21 6.5 21h11c2.404 0 4.037-.935 5.166-2.381 1.018-1.277 1.334-2.843 1.334-4.452 0-1.645-.316-3.21-1.334-4.452C21.537 8.351 19.904 7.417 17.5 7.417h-11c-2.404 0-4.037.934-5.166 2.298ZM10.5 17v-5.667L15.333 14.167 10.5 17Z" clipRule="evenodd" />
+  </svg>
+);

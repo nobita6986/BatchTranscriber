@@ -1,6 +1,6 @@
 import React from 'react';
 import { JobStatus, VideoJob, LibraryItem } from '../types';
-import { CheckCircleIcon, XCircleIcon, FileIcon, DownloadIcon, TrashIcon, RefreshIcon } from './Icons';
+import { CheckCircleIcon, XCircleIcon, FileIcon, DownloadIcon, TrashIcon, RefreshIcon, YoutubeIcon } from './Icons';
 
 interface VideoListProps {
   mode: 'queue' | 'library';
@@ -21,7 +21,7 @@ export const VideoList: React.FC<VideoListProps> = ({
     return (
       <div className="flex flex-col items-center justify-center h-full text-slate-500 p-8 border-2 border-dashed border-slate-700 rounded-xl bg-slate-800/30">
         <p className="text-lg">No videos queued</p>
-        <p className="text-sm">Upload videos to start</p>
+        <p className="text-sm">Upload videos or import links to start</p>
       </div>
     );
   }
@@ -46,8 +46,9 @@ export const VideoList: React.FC<VideoListProps> = ({
         const libItem = !isJob ? (item as LibraryItem) : null;
         
         const id = isJob ? job!.id : libItem!.id;
-        const name = isJob ? job!.file.name : libItem!.fileName;
-        const size = isJob ? job!.file.size : libItem!.fileSize;
+        const name = isJob ? job!.name : libItem!.fileName;
+        const isYoutube = isJob ? job!.source === 'youtube' : libItem!.source === 'youtube';
+        const thumbnail = isJob ? job!.thumbnail : undefined;
         
         return (
           <div
@@ -59,31 +60,58 @@ export const VideoList: React.FC<VideoListProps> = ({
                 : 'bg-slate-800/50 border-slate-700 hover:border-slate-600 hover:bg-slate-800'
             }`}
           >
-            {/* Status Icon */}
+            {/* Status Icon or Thumbnail */}
             <div className="flex-shrink-0 mr-4">
-              {isJob ? (
+              {thumbnail ? (
+                  <div className="relative w-12 h-8 rounded overflow-hidden">
+                      <img src={thumbnail} alt="thumb" className="w-full h-full object-cover" />
+                      {/* Overlay status if job */}
+                      {isJob && job!.status === JobStatus.PROCESSING && (
+                          <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                              <div className="w-4 h-4 rounded-full border-2 border-primary-500 border-t-transparent animate-spin" />
+                          </div>
+                      )}
+                      {isJob && job!.status === JobStatus.ERROR && (
+                          <div className="absolute inset-0 bg-red-900/50 flex items-center justify-center">
+                              <XCircleIcon className="w-4 h-4 text-red-500" />
+                          </div>
+                      )}
+                      {isJob && job!.status === JobStatus.COMPLETED && (
+                          <div className="absolute bottom-0 right-0">
+                               <CheckCircleIcon className="w-4 h-4 text-green-500 bg-black rounded-full" />
+                          </div>
+                      )}
+                  </div>
+              ) : (
                 <>
-                  {job!.status === JobStatus.COMPLETED && <CheckCircleIcon className="w-6 h-6 text-green-500" />}
-                  {job!.status === JobStatus.ERROR && <XCircleIcon className="w-6 h-6 text-red-500" />}
-                  {job!.status === JobStatus.PROCESSING && (
-                    <div className="w-6 h-6 rounded-full border-2 border-primary-500 border-t-transparent animate-spin" />
-                  )}
-                  {job!.status === JobStatus.IDLE && <FileIcon className="w-6 h-6 text-slate-400" />}
-                  {job!.status === JobStatus.UPLOADING && (
-                      <div className="w-6 h-6 rounded-full border-2 border-slate-400 border-t-transparent animate-spin" />
+                  {isJob ? (
+                    <>
+                      {job!.status === JobStatus.COMPLETED && <CheckCircleIcon className="w-6 h-6 text-green-500" />}
+                      {job!.status === JobStatus.ERROR && <XCircleIcon className="w-6 h-6 text-red-500" />}
+                      {job!.status === JobStatus.PROCESSING && (
+                        <div className="w-6 h-6 rounded-full border-2 border-primary-500 border-t-transparent animate-spin" />
+                      )}
+                      {job!.status === JobStatus.IDLE && (
+                          isYoutube ? <YoutubeIcon className="w-6 h-6 text-red-500" /> : <FileIcon className="w-6 h-6 text-slate-400" />
+                      )}
+                      {job!.status === JobStatus.UPLOADING && (
+                          <div className="w-6 h-6 rounded-full border-2 border-slate-400 border-t-transparent animate-spin" />
+                      )}
+                    </>
+                  ) : (
+                    isYoutube ? <YoutubeIcon className="w-6 h-6 text-red-500" /> : <FileIcon className="w-6 h-6 text-purple-400" />
                   )}
                 </>
-              ) : (
-                <FileIcon className="w-6 h-6 text-purple-400" />
               )}
             </div>
 
             {/* Info */}
             <div className="flex-1 min-w-0">
-              <h4 className="text-sm font-medium text-slate-200 truncate pr-14">{name}</h4>
+              <h4 className="text-sm font-medium text-slate-200 truncate pr-14" title={name}>{name}</h4>
               <div className="flex items-center text-xs text-slate-400 mt-1 space-x-2">
-                <span>{(size / (1024 * 1024)).toFixed(2)} MB</span>
-                <span>•</span>
+                {!isYoutube && isJob && <span>{(job!.size! / (1024 * 1024)).toFixed(2)} MB</span>}
+                {!isYoutube && isJob && <span>•</span>}
+                
                 {isJob ? (
                   <span className={`
                     ${job!.status === JobStatus.COMPLETED ? 'text-green-400' : ''}
@@ -91,8 +119,8 @@ export const VideoList: React.FC<VideoListProps> = ({
                     ${job!.status === JobStatus.PROCESSING ? 'text-primary-400' : ''}
                   `}>
                     {job!.status === JobStatus.IDLE && 'Queued'}
-                    {job!.status === JobStatus.UPLOADING && 'Reading...'}
-                    {job!.status === JobStatus.PROCESSING && 'Transcribing...'}
+                    {job!.status === JobStatus.UPLOADING && (isYoutube ? 'Fetching Info...' : 'Reading...')}
+                    {job!.status === JobStatus.PROCESSING && (isYoutube ? 'Refining...' : 'Transcribing...')}
                     {job!.status === JobStatus.COMPLETED && 'Done'}
                     {job!.status === JobStatus.ERROR && 'Failed'}
                   </span>

@@ -60,6 +60,11 @@ function App() {
   const [activeKeyId, setActiveKeyId] = useState<string | null>(() => {
     return localStorage.getItem('gemini_active_key_id') || null;
   });
+  // New: SearchAPI Key State
+  const [searchApiKey, setSearchApiKey] = useState<string>(() => {
+     return localStorage.getItem('searchapi_key') || '';
+  });
+
   const [showKeyManager, setShowKeyManager] = useState(false);
   const [showYoutubeModal, setShowYoutubeModal] = useState(false);
   const [youtubeInput, setYoutubeInput] = useState('');
@@ -84,6 +89,10 @@ function App() {
     if (activeKeyId) localStorage.setItem('gemini_active_key_id', activeKeyId);
     else localStorage.removeItem('gemini_active_key_id');
   }, [activeKeyId]);
+
+  useEffect(() => {
+      localStorage.setItem('searchapi_key', searchApiKey);
+  }, [searchApiKey]);
 
 
   // --- Helper Functions ---
@@ -240,7 +249,7 @@ function App() {
 
       const key = getActiveApiKey();
       if (!key) {
-        updateJob(jobId, { status: JobStatus.ERROR, error: "Missing API Key" });
+        updateJob(jobId, { status: JobStatus.ERROR, error: "Missing Gemini API Key" });
         setIsQueueRunning(false); 
         setShowKeyManager(true);
         return;
@@ -252,8 +261,8 @@ function App() {
         let transcript = "";
 
         if (job.source === 'youtube' && job.url) {
-            // 1. Fetch Raw Transcript
-            const rawText = await fetchYoutubeTranscript(job.url);
+            // 1. Fetch Raw Transcript (Pass SearchAPI Key)
+            const rawText = await fetchYoutubeTranscript(job.url, searchApiKey);
             
             // 2. Refine with Gemini
             updateJob(jobId, { status: JobStatus.PROCESSING });
@@ -285,7 +294,7 @@ function App() {
           progress: 0 
         });
       }
-  }, [jobs, updateJob, apiKeys, activeKeyId]);
+  }, [jobs, updateJob, apiKeys, activeKeyId, searchApiKey]); // Added searchApiKey to dependency
 
   // Main Queue Watcher
   useEffect(() => {
@@ -369,6 +378,7 @@ function App() {
         <ApiKeyManager 
           apiKeys={apiKeys}
           selectedKeyId={activeKeyId}
+          searchApiKey={searchApiKey}
           onAddKey={(k) => {
              setApiKeys(prev => [...prev, k]);
              if (!activeKeyId) setActiveKeyId(k.id);
@@ -378,6 +388,7 @@ function App() {
              if (activeKeyId === id) setActiveKeyId(null);
           }}
           onSelectKey={setActiveKeyId}
+          onUpdateSearchKey={setSearchApiKey}
           onClose={() => setShowKeyManager(false)}
         />
       )}

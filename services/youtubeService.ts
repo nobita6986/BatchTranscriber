@@ -6,18 +6,23 @@ export interface YoutubeMetadata {
     author_name?: string;
 }
 
-const SEARCH_API_KEY = 'r1Z8QfhRCLj1VuH93y6U7P56'; // Key provided by user
-
 const extractVideoId = (url: string): string | null => {
-    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
+    // Extended regex to handle Shorts, Mobile, and Standard URLs
+    const regExp = /^.*((youtu.be\/)|(v\/)|(\/u\/\w\/)|(embed\/)|(watch\?v=)|(shorts\/)|(&v=))([^#&?]*).*/;
     const match = url.match(regExp);
-    return (match && match[2].length === 11) ? match[2] : null;
+    return (match && match[9].length === 11) ? match[9] : null;
 };
 
 // OEmbed is the cleanest way to get public metadata without an API key
 export const getYoutubeMetadata = async (url: string): Promise<YoutubeMetadata> => {
     try {
-        const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+        const videoId = extractVideoId(url);
+        if (!videoId) throw new Error("Invalid YouTube URL");
+
+        // Use canonical watch URL for oembed to avoid issues with shorts links
+        const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}`;
+        const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(canonicalUrl)}&format=json`;
+        
         const res = await fetch(oembedUrl);
         if (!res.ok) throw new Error("Video not found");
         const data = await res.json();
@@ -38,17 +43,37 @@ export const getYoutubeMetadata = async (url: string): Promise<YoutubeMetadata> 
     }
 };
 
-// --- TRANSCRIPT FETCHING STRATEGIES ---
+// --- HELPER: LANGUAGE SELECTION ---
+const selectBestTrack = (captions: any[]) => {
+    if (!captions || captions.length === 0) return null;
 
-// Strategy 0: SearchAPI (Premium/Reliable) - Uses the provided API Key
-// This bypasses YouTube blocking by using a commercial scraper
-const fetchViaSearchApi = async (videoId: string): Promise<string> => {
-    if (!SEARCH_API_KEY) throw new Error("No SearchAPI key configured");
+    const isAuto = (t: any) => (t.kind === 'asr' || (t.label && t.label.toLowerCase().includes('auto')));
+
+    // 1. Manual English
+    const manualEn = captions.find((t: any) => (t.languageCode === 'en' || t.language === 'en') && !isAuto(t));
+    if (manualEn) return manualEn;
+
+    // 2. Manual Any Language (Preferred for Japanese/other videos)
+    const manualAny = captions.find((t: any) => !isAuto(t));
+    if (manualAny) return manualAny;
+
+    // 3. Auto English
+    const autoEn = captions.find((t: any) => t.languageCode === 'en' || t.language === 'en');
+    if (autoEn) return autoEn;
+
+    // 4. Fallback to whatever is first
+    return captions[0];
+};
+
+
+// --- STRATEGY 0: SearchAPI (Premium) ---
+const fetchViaSearchApi = async (videoId: string, apiKey?: string): Promise<string> => {
+    if (!apiKey) throw new Error("No SearchAPI key configured");
 
     const url = new URL('https://www.searchapi.io/api/v1/search');
     url.searchParams.append('engine', 'youtube_transcripts');
     url.searchParams.append('video_id', videoId);
-    url.searchParams.append('api_key', SEARCH_API_KEY);
+    url.searchParams.append('api_key', apiKey);
 
     const response = await fetch(url.toString());
 
@@ -63,9 +88,8 @@ const fetchViaSearchApi = async (videoId: string): Promise<string> => {
 
     const data = await response.json();
 
-    // SearchAPI returns { transcripts: [ { text, start, duration, ... } ] }
     if (!data.transcripts || !Array.isArray(data.transcripts) || data.transcripts.length === 0) {
-        throw new Error("SearchAPI returned no transcripts for this video.");
+        throw new Error("SearchAPI returned no transcripts.");
     }
 
     // Combine text parts
@@ -79,7 +103,7 @@ const fetchViaSearchApi = async (videoId: string): Promise<string> => {
 };
 
 
-// Strategy 1: Invidious API (Best Free option for client-side)
+// --- STRATEGY 1: Invidious API (Free) ---
 const INVIDIOUS_INSTANCES = [
     'https://inv.tux.pizza',
     'https://invidious.jing.rocks',
@@ -111,12 +135,12 @@ const fetchViaInvidious = async (videoId: string): Promise<string> => {
             const captions = data.captions;
 
             if (!captions || captions.length === 0) {
-                throw new Error("No captions found for this video.");
+                // Video might genuinely not have captions
+                throw new Error("No captions found on Invidious.");
             }
 
-            const track = captions.find((t: any) => t.language === 'en' && !t.label.toLowerCase().includes('auto')) 
-                       || captions.find((t: any) => t.language === 'en')
-                       || captions[0]; 
+            // Use relaxed selection logic
+            const track = selectBestTrack(captions);
 
             if (!track) throw new Error("No suitable caption track found.");
 
@@ -131,7 +155,7 @@ const fetchViaInvidious = async (videoId: string): Promise<string> => {
             return cleanText;
 
         } catch (e: any) {
-            console.warn(`Invidious instance ${instance} failed:`, e.message);
+            // console.warn(`Invidious instance ${instance} failed:`, e.message);
             lastError = e;
         }
     }
@@ -139,7 +163,7 @@ const fetchViaInvidious = async (videoId: string): Promise<string> => {
 };
 
 
-// Strategy 2: Raw HTML Scraping via Proxy (Fallback)
+// --- STRATEGY 2: Raw Scraping (Fallback) ---
 const PROXY_LIST = [
     'https://corsproxy.io/?',
     'https://api.allorigins.win/raw?url='
@@ -160,10 +184,12 @@ const fetchViaScraping = async (videoId: string): Promise<string> => {
             if (html.includes('class="g-recaptcha"')) throw new Error("Blocked by Captcha");
 
             let captionTracks;
+            // Pattern 1: Direct in HTML
             const captionMatch = html.match(/"captionTracks":(\[.*?\])/);
             if (captionMatch) {
                 captionTracks = JSON.parse(captionMatch[1]);
             } else {
+                // Pattern 2: Inside player response
                 const playerMatch = html.match(/var ytInitialPlayerResponse\s*=\s*({.+?});/);
                 if (playerMatch) {
                      const parsed = JSON.parse(playerMatch[1]);
@@ -173,9 +199,8 @@ const fetchViaScraping = async (videoId: string): Promise<string> => {
 
             if (!captionTracks || captionTracks.length === 0) throw new Error("No caption tracks found in HTML.");
 
-            const track = captionTracks.find((t: any) => t.languageCode === 'en' && (!t.kind || t.kind !== 'asr')) 
-                       || captionTracks.find((t: any) => t.languageCode === 'en') 
-                       || captionTracks[0];
+            // Use relaxed selection logic
+            const track = selectBestTrack(captionTracks);
 
             if (!track || !track.baseUrl) throw new Error("No transcript URL.");
 
@@ -183,6 +208,7 @@ const fetchViaScraping = async (videoId: string): Promise<string> => {
             const xmlRes = await fetch(xmlProxyUrl);
             const xmlText = await xmlRes.text();
 
+            // Clean XML
             const text = xmlText
                 .replace(/<text.+?>/g, ' ')
                 .replace(/<\/text>/g, ' ')
@@ -193,43 +219,44 @@ const fetchViaScraping = async (videoId: string): Promise<string> => {
                 .replace(/\s+/g, ' ')
                 .trim();
             
+            if (text.length === 0) throw new Error("Empty transcript content");
+            
             return text;
 
         } catch (e: any) {
-            console.warn(`Scraping proxy ${proxyBase} failed:`, e.message);
+            // console.warn(`Scraping proxy ${proxyBase} failed:`, e.message);
             lastError = e;
         }
     }
-    throw lastError || new Error("Scraping fallback failed.");
+    throw lastError || new Error("Scraping fallback failed (Captcha or No Captions).");
 };
 
-// Main Export
-export const fetchYoutubeTranscript = async (url: string): Promise<string> => {
+// --- MAIN EXPORT ---
+export const fetchYoutubeTranscript = async (url: string, searchApiKey?: string): Promise<string> => {
     const videoId = extractVideoId(url);
     if (!videoId) throw new Error("Invalid Video ID");
 
-    // 1. Try SearchAPI (Premium) - Most Reliable
-    try {
-        console.log("Attempting SearchAPI...");
-        return await fetchViaSearchApi(videoId);
-    } catch (e: any) {
-        console.warn("SearchAPI strategy failed:", e.message);
-        // Fallthrough to free methods
+    // Strategy 0: SearchAPI (Most Reliable if Key Provided)
+    if (searchApiKey) {
+        try {
+            return await fetchViaSearchApi(videoId, searchApiKey);
+        } catch (e: any) {
+            console.warn("SearchAPI failed, falling back...", e.message);
+            // If quota exceeded, we fall back to free methods
+        }
     }
 
-    // 2. Try Invidious (Free API)
+    // Strategy 1: Invidious
     try {
-        console.log("Attempting Invidious API...");
         return await fetchViaInvidious(videoId);
     } catch (e) {
-        console.warn("Invidious strategy failed:", e);
+        console.warn("Invidious failed, falling back...", e);
     }
 
-    // 3. Try Scraping (Last Resort)
+    // Strategy 2: Scraping
     try {
-        console.log("Attempting Direct Scraping...");
         return await fetchViaScraping(videoId);
     } catch (e: any) {
-        throw new Error(`Could not fetch transcript. All methods failed. Last error: ${e.message}`);
+        throw new Error(`Failed to fetch transcript. The video might not have captions enabled. Details: ${e.message}`);
     }
 };
